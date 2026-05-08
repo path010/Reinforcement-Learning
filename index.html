@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>强化学习：关卡编辑器版</title>
+    <style>
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background: #0f172a; color: #f8fafc; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+        .container { background: #1e293b; padding: 25px; border-radius: 15px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); display: flex; gap: 20px; max-width: 950px; }
+        .game-side { flex: 1; }
+        .info-side { width: 280px; background: #0f172a; padding: 15px; border-radius: 10px; display: flex; flex-direction: column; }
+        
+        h1 { font-size: 20px; color: #38bdf8; margin-top: 0; text-align: center; }
+        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 20px; }
+        .stat-box { background: #334155; padding: 10px; border-radius: 8px; border-left: 4px solid #38bdf8; }
+        .stat-label { font-size: 11px; color: #94a3b8; text-transform: uppercase; }
+        .stat-value { font-size: 18px; font-weight: bold; display: block; }
+        
+        canvas { background: #0f172a; border: 2px solid #334155; border-radius: 8px; cursor: pointer; }
+        
+        .event-log { flex-grow: 1; overflow-y: auto; font-family: 'Courier New', monospace; font-size: 12px; margin-top: 10px; border: 1px solid #334155; padding: 5px; height: 180px; }
+        .log-entry { margin-bottom: 4px; padding: 2px 5px; border-radius: 3px; }
+        .log-death { background: #450a0a; color: #f87171; }
+        .log-win { background: #064e3b; color: #34d399; }
+        .log-portal { background: #1e3a8a; color: #60a5fa; }
+
+        .controls { margin-top: 15px; display: flex; flex-direction: column; gap: 10px; }
+        .slider-group { display: flex; align-items: center; gap: 10px; background: #334155; padding: 8px; border-radius: 8px; font-size: 13px; }
+        .btn-group { display: flex; gap: 5px; }
+        button { flex: 1; padding: 8px; border-radius: 6px; border: none; cursor: pointer; font-weight: bold; transition: 0.2s; }
+        #startBtn { background: #22c55e; color: white; }
+        #pauseBtn { background: #f59e0b; color: white; }
+        #resetBtn { background: #ef4444; color: white; }
+        
+        .edit-hint { background: #334155; color: #fbbf24; padding: 8px; border-radius: 6px; font-size: 12px; text-align: center; margin-bottom: 10px; border: 1px dashed #fbbf24; }
+        .legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; margin-top: 10px; }
+        .legend-item { display: flex; align-items: center; gap: 4px; }
+        .dot { width: 8px; height: 8px; border-radius: 2px; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="game-side">
+        <h1>Q-Learning 关卡编辑器</h1>
+        <div class="edit-hint" id="editHint">模式：[编辑中] 点击格子切换属性</div>
+        
+        <div class="stats-grid">
+            <div class="stat-box"><span class="stat-label">运行次数</span><span id="epDisplay" class="stat-value">0</span></div>
+            <div class="stat-box" style="border-color: #22c55e;"><span class="stat-label">成功率</span><span id="successRate" class="stat-value">0%</span></div>
+            <div class="stat-box" style="border-color: #facc15;"><span class="stat-label">最高分</span><span id="highScoreDisplay" class="stat-value">0</span></div>
+            <div class="stat-box" style="border-color: #ef4444;"><span class="stat-label">当前步数</span><span id="stepDisplay" class="stat-value">0</span></div>
+        </div>
+
+        <canvas id="gameCanvas" width="400" height="400"></canvas>
+
+        <div class="controls">
+            <div class="slider-group">
+                <label style="min-width: 120px;">学习率 α: <span id="alphaVal">0.10</span></label>
+                <input type="range" id="alphaSlider" min="0.01" max="1.0" step="0.01" value="0.1" style="flex-grow: 1;">
+            </div>
+            <div class="btn-group">
+                <button id="startBtn">开始运行训练</button>
+                <button id="pauseBtn">暂停</button>
+                <button id="resetBtn">重置并编辑</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="info-side">
+        <span class="stat-label">事件日志</span>
+        <div id="eventLog" class="event-log"></div>
+        
+        <div class="legend" style="margin-top: 20px;">
+            <div class="legend-item"><div class="dot" style="background:#1e293b; border:1px solid #334155"></div> 道路</div>
+            <div class="legend-item"><div class="dot" style="background:#ef4444"></div> 陷阱 (死)</div>
+            <div class="legend-item"><div class="dot" style="background:#38bdf8"></div> 传送 (25%胜)</div>
+            <div class="legend-item"><div class="dot" style="background:#22c55e"></div> 终点 (胜)</div>
+            <div class="legend-item"><div class="dot" style="background:#fff"></div> 智能体</div>
+        </div>
+        <p style="font-size: 11px; color: #94a3b8; margin-top: 15px; line-height: 1.4;">
+            <b>编辑规则：</b><br>
+            1. 只有点击“重置”后且未运行时可编辑。<br>
+            2. 点击路径：道路→陷阱→传送→终点→道路。<br>
+            3. 终点不可少于一个。
+        </p>
+    </div>
+</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+    const epDisplay = document.getElementById('epDisplay');
+    const successDisplay = document.getElementById('successRate');
+    const scoreDisplay = document.getElementById('highScoreDisplay');
+    const stepDisplay = document.getElementById('stepDisplay');
+    const eventLog = document.getElementById('eventLog');
+    const alphaSlider = document.getElementById('alphaSlider');
+    const alphaValText = document.getElementById('alphaVal');
+    const editHint = document.getElementById('editHint');
+
+    const gridSize = 10;
+    const cellSize = canvas.width / gridSize;
+    let episodes = 0, totalWins = 0, currentSteps = 0, highScore = -999;
+    let isRunning = false, hasStarted = false, alpha = 0.1, gamma = 0.9, epsilon = 0.3;
+    let qTable = {}, agentPos = { x: 0, y: 0 };
+
+    // 地图: 0路, 1墙(此处作为道路处理), 2终点, 3陷阱, 4传送
+    let map = [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,3,0,0,0,0,0,0],
+        [0,0,0,0,0,4,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,2]
+    ];
+
+    function logEvent(type, text) {
+        const div = document.createElement('div');
+        div.className = `log-entry log-${type}`;
+        div.innerText = `[Ep ${episodes}] ${text}`;
+        eventLog.prepend(div);
+        if (eventLog.childNodes.length > 50) eventLog.lastChild.remove();
+    }
+
+    function initAgent() { agentPos = { x: 0, y: 0 }; currentSteps = 0; }
+
+    function chooseAction(s) {
+        if (Math.random() < epsilon) return Math.floor(Math.random() * 4);
+        const values = qTable[s] || [0,0,0,0];
+        return values.indexOf(Math.max(...values));
+    }
+
+    // 点击格子逻辑
+    canvas.addEventListener('mousedown', function(e) {
+        if (hasStarted) return; // 游戏已经开始运行过，禁止修改
+
+        const rect = canvas.getBoundingClientRect();
+        const x = Math.floor((e.clientX - rect.left) / cellSize);
+        const y = Math.floor((e.clientY - rect.top) / cellSize);
+
+        // 状态循环: 0 -> 3 -> 4 -> 2 -> 0
+        let currentType = map[y][x];
+        let nextType;
+        if (currentType === 0) nextType = 3;
+        else if (currentType === 3) nextType = 4;
+        else if (currentType === 4) nextType = 2;
+        else if (currentType === 2) {
+            // 检查终点数量
+            let goalCount = 0;
+            for(let r=0; r<gridSize; r++) for(let c=0; c<gridSize; c++) if(map[r][c] === 2) goalCount++;
+            
+            if (goalCount <= 1) {
+                alert("警告：必须保留至少一个终点！");
+                return;
+            }
+            nextType = 0;
+        } else {
+            nextType = 0;
+        }
+
+        map[y][x] = nextType;
+        draw();
+    });
+
+    function update() {
+        if (!isRunning) return;
+        const state = `${agentPos.x},${agentPos.y}`;
+        if (!qTable[state]) qTable[state] = [0,0,0,0];
+        
+        const action = chooseAction(state);
+        let nextPos = { ...agentPos };
+        if (action === 0) nextPos.y--; else if (action === 1) nextPos.y++;
+        else if (action === 2) nextPos.x--; else if (action === 3) nextPos.x++;
+
+        // 边界处理
+        if (nextPos.x < 0 || nextPos.x >= gridSize || nextPos.y < 0 || nextPos.y >= gridSize) {
+            nextPos = { ...agentPos };
+        }
+
+        let reward = -1, done = false, reachedGoal = false;
+        let cell = map[nextPos.y][nextPos.x];
+
+        if (cell === 2) { 
+            reward = 100; done = true; reachedGoal = true;
+            logEvent('win', '抵达终点');
+        } 
+        else if (cell === 3) { 
+            reward = -100; done = true; 
+            logEvent('death', '掉入陷阱');
+        } 
+        else if (cell === 4) { 
+            if (Math.random() < 0.25) {
+                reward = 100; done = true; reachedGoal = true;
+                nextPos = { x: 9, y: 9 };
+                logEvent('portal', '传送成功');
+            } else {
+                reward = -100; done = true;
+                logEvent('death', '传送失败');
+            }
+        }
+
+        const nextState = `${nextPos.x},${nextPos.y}`;
+        if (!qTable[nextState]) qTable[nextState] = [0,0,0,0];
+        const oldQ = qTable[state][action];
+        const nextMaxQ = Math.max(...qTable[nextState]);
+        qTable[state][action] = oldQ + alpha * (reward + gamma * nextMaxQ - oldQ);
+
+        agentPos = nextPos;
+        currentSteps++;
+        stepDisplay.innerText = currentSteps;
+
+        if (done) {
+            episodes++;
+            if (reachedGoal) totalWins++;
+            let finalScore = reward - currentSteps;
+            if (finalScore > highScore) { highScore = finalScore; scoreDisplay.innerText = highScore; }
+            epDisplay.innerText = episodes;
+            successDisplay.innerText = Math.round((totalWins/episodes)*100) + '%';
+            if (epsilon > 0.02) epsilon *= 0.995;
+            initAgent();
+        }
+        draw();
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        for (let y = 0; y < gridSize; y++) {
+            for (let x = 0; x < gridSize; x++) {
+                const cell = map[y][x];
+                ctx.fillStyle = cell === 2 ? "#22c55e" : cell === 3 ? "#ef4444" : cell === 4 ? "#38bdf8" : "#1e293b";
+                ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+                ctx.strokeStyle = "rgba(255,255,255,0.05)";
+                ctx.strokeRect(x * cellSize, y * cellSize, cellSize, cellSize);
+            }
+        }
+        ctx.fillStyle = "#fff";
+        ctx.beginPath();
+        ctx.arc(agentPos.x * cellSize + cellSize/2, agentPos.y * cellSize + cellSize/2, cellSize/3, 0, Math.PI*2);
+        ctx.fill();
+    }
+
+    alphaSlider.oninput = () => { alpha = parseFloat(alphaSlider.value); alphaValText.innerText = alpha.toFixed(2); };
+    
+    document.getElementById('startBtn').onclick = () => {
+        isRunning = true;
+        hasStarted = true;
+        editHint.innerText = "模式：[运行中] 编辑已锁定";
+        editHint.style.borderColor = "#22c55e";
+        editHint.style.color = "#22c55e";
+    };
+    
+    document.getElementById('pauseBtn').onclick = () => isRunning = false;
+    
+    document.getElementById('resetBtn').onclick = () => {
+        location.reload(); // 通过重新加载来实现最彻底的重置
+    };
+
+    setInterval(update, 20);
+    draw();
+</script>
+</body>
+</html>
